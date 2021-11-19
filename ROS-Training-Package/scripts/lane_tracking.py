@@ -17,19 +17,14 @@ class Camera():
 	self.position_pub = rospy.Publisher('/commands/servo/position', Float64, queue_size=10)
 	self.prev_poly_left = 0
 	self.prev_poly_right = 0
-	self.slope = 0
-	self.height = 0
-	self.width = 0
-	self.position = 0
 	self.left_x_start = 0
 	self.left_x_end = 0
 	self.right_x_start = 0
 	self.right_x_end = 0
-	self.radian = 0
+	self.height = 0
+	self.width = 0
 	self.max_y = 0
 	self.min_y = 0
-	self.cx = 0
-	self.cy = 0
 
     def region_of_interest(self, frame):
 	self.height = frame.shape[0]
@@ -59,17 +54,17 @@ class Camera():
 	right_line_x = []
 	right_line_y = []
 
-	self.min_y = 0 #image.shape[0]/2
+	self.min_y = 0
 	self.max_y = image.shape[0]
 
 	if lines is not None:
 	     for line in lines:
 	        for x1, y1, x2, y2 in line:
 			# print('x1', x1, 'y1', y1, 'x2', x2, 'y2', y2)
-			     self.slope = float((y2-y1))/float((x2-x1))
-	        if math.fabs(self.slope) < 0.5:
+			     slope = float((y2-y1))/float((x2-x1))
+	        if math.fabs(slope) < 0.5:
 			continue
-		if self.slope <= 0:
+		if slope <= 0:
 		     	left_line_x.extend([x1, x2])
 		     	left_line_y.extend([y1, y2])
 		else: # !
@@ -97,8 +92,6 @@ class Camera():
 	if poly_right is not None:
 	     self.right_x_start = int(poly_right(self.max_y))
 	     self.right_x_end = int(poly_right(self.min_y))
-#	if right_line_x is not None and right_line_y is not None:
-#	    pass
 
 	line_image = self.draw_lines(
 	image,
@@ -112,52 +105,50 @@ class Camera():
     def get_radian(self, left_x_s,left_y_s, left_x_e,left_y_e, right_x_s,right_y_s, right_x_e,right_y_e):
 	print('left_x_start : {}, left_y_start : {},\nleft_x_end : {}, left_y_end : {},\nright_x_start : {}, right_y_start : {},\nright_x_end : {}, right_y_end : {}'.format(left_x_s, left_y_s, left_x_e, left_y_e, right_x_s, right_y_s, right_x_e, right_y_e))
 
-	print(left_y_e-left_y_s)
 	left_slope = float(float((left_y_e-left_y_s))/float((left_x_e-left_x_s)))
 	right_slope = float(float((right_y_e-right_y_s))/float((right_x_e-right_x_s)))
 
 	print('left_slope : {}, right_slope : {}'.format(left_slope, right_slope))
 
-	self.cx = float((left_x_s*left_slope-left_y_s-right_x_s*right_slope+right_y_s)/(left_slope-right_slope))
-	self.cy = float(left_slope * (self.cx-left_x_s)+left_y_s)
-	print('cx : {}, cy : {}'.format(self.cx, self.cy))
+	cx = float((left_x_s*left_slope-left_y_s-right_x_s*right_slope+right_y_s)/(left_slope-right_slope))
+	cy = float(left_slope * (cx-left_x_s)+left_y_s)
+	print('cx : {}, cy : {}'.format(cx, cy))
 
-	if self.cx <= self.width/2:
-		self.radian = 1.5708+math.atan(float(float((self.height-self.cy))/float((self.cx-self.width/2))))
+	if cx <= self.width/2:
+		# left
+		radian = 1.5708+math.atan(float(float((self.height-cy))/float((cx-self.width/2))))
 	else:
-		self.radian = 1.5708-math.atan(float(float((self.height-self.cy))/float((self.cx-self.width/2))))
+		# right
+		radian = 1.5708-math.atan(float(float((self.height-cy))/float((cx-self.width/2))))
 
-	print('radian : {}'.format(self.radian))
+	print('radian : {}'.format(radian))
 
-	return self.radian
-
-    def mkcsv(self, ):
-	f = open('data.csv', 'a')
-	writer = csv.writer(f)
-	writer.writerow([self.cx, self.cy, self.radian, self.position])
-	f.close()
+	return cx, cy, radian
 
     def process(self, img):
-        np_arr = np.fromstring(img.data, np.uint8) #image data -> list / np.uint8 : 0 ~ 255
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR) #byte -> jpg
+        np_arr = np.fromstring(img.data, np.uint8) # image data -> list / np.uint8 : 0 ~ 255
+        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR) # byte -> jpg
 	gray_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2GRAY)
 	cannyed_image = cv2.Canny(gray_image, 100, 200)
 	ROI_img = self.region_of_interest(cannyed_image)
         lines = cv2.HoughLinesP(ROI_img, 6, np.pi / 60, 160, np.array([]), minLineLength=20, maxLineGap=20)
 
-	output = cv2.addWeighted(cv_image, 0.9, self.pipeline(cv_image, lines), 1, 1)
+	pipeline = self.pipeline(cv_image, lines)
+	output = cv2.addWeighted(cv_image, 0.9, pipeline, 1, 1)
 
-	radian = self.get_radian(self.left_x_start, self.max_y, self.left_x_end, self.min_y, self.right_x_start, self.max_y, self.right_x_end, self.min_y)
-	
-	self.position = 0.5304 + radian*0.75
+	cx, cy, radian = self.get_radian(pipeline[1][0][0], self.max_y, self.left_x_end, self.min_y, self.right_x_start, self.max_y, self.right_x_end, self.min_y)
+		
+	if cx <= self.width/2:
+		position = 0.5304 - radian*0.75
+	else:
+		position = 0.5304 + radian*0.75
 	speed = 3000.0
-	print('position : {}\n'.format(self.position))
-	#self.position = 0.5304
+	print('position : {}\n'.format(position))
 
 	self.speed_pub.publish(speed)
-	self.position_pub.publish(self.position)
+	self.position_pub.publish(position)
 
-	self.mkcsv()
+	self.mkcsv(cx, cy, radian, position)
 
         if output is not None:
 
@@ -165,6 +156,12 @@ class Camera():
                 cv2.waitKey(0)
 
             cv2.imshow("minLineLength=1", output)
+
+    def mkcsv(self, cx, cy, radian, position):
+	f = open('data.csv', 'a')
+	writer = csv.writer(f)
+	writer.writerow([cx, cy, radian, position])
+	f.close()
 
 if __name__ == "__main__":
     try:
